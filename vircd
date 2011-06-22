@@ -13,9 +13,7 @@ use IO::Socket;
 use Socket;
 
 # TODO: Modularize code.
-#       Make serv_[user|nick] not depend on global @clients_to_connect, make that local to while loop.
 #       No subroutines fiddle around with globals (too much)
-#       Subroutine that's safer than doing $fhs{lc $nick} (is it worth it?)
 #       Constants ($local{} and the like) in sprintfs.
 
 
@@ -101,17 +99,16 @@ my @clients_to_connect; # Array containing a list of filehandles that just conne
 
 my %users;  # Hash containing filehandles as keys, references to hashes as values. Hashes contain user info.
 my %local;  # Hash containing all local info for the server. Ex. $local{users}
-my %fhs;    # Hash mapping nicks to filehandles.
 
 # Will be replaced to be read from a config file later.
-$local{version}     = 'Veachian-0.22';
+$local{version}     = 'Veachian-0.23';
 $local{network}     = 'V64net';
-$local{server}      = 'G42.V64.net';
+$local{server}      = 'irc.V64.net';
 $local{server_desc} = 'The Veachian IRCd - Written entirely in the Perl programming language.';
 $local{start_date}  =  get_date();
 $local{motd_file}   = 'vircd.motd';
 $local{port}        = 4242;
-$local{read_size}   = 1_048_576;
+$local{read_size}   = 1048576;
 
 my $debug = 0;
 
@@ -193,14 +190,12 @@ while (1) {
 # Does DNS and reverse DNS to find socket's full and real host.
 sub look_up_host {
     my ($fh) = @_;
-    my $other_end = getpeername($fh);
-    my $iaddr = (unpack_sockaddr_in($other_end))[1];
+    my $iaddr = (unpack_sockaddr_in(getpeername($fh)))[1];
     my $actual_ip = inet_ntoa($iaddr);
-    my $claimed_hostname = gethostbyaddr($iaddr, AF_INET);
-    my $name_lookup = (gethostbyname($claimed_hostname))[0];
+    my $reverse_dns = gethostbyaddr($iaddr, AF_INET);
 
-    if ($name_lookup) {
-        $users{$fh}->{hostname} = $name_lookup;
+    if ($reverse_dns) {
+        $users{$fh}->{hostname} = $reverse_dns;
         1;
     }
     else {
@@ -247,7 +242,7 @@ sub disconnect_dead_clients {
         $local{reader}->remove($fh);
         $local{sender}->remove($fh);
         my $nick = $users{$fh}->{nick};
-        if ($nick) { delete $fhs{lc $nick} }
+        if ($nick) { delete $users{lc $nick} }
         delete $users{$fh};
         $fh->close; # Oddly enough, if I do this any sooner, it screws up.
     }
@@ -329,10 +324,8 @@ sub serv_user {
     if (!$users{$fh}->{connected}) {
         if (@user_info < 5) { send_user_msg_num($fh, $ERR_NEEDMOREPARAMS, 'USER'); return; }
         $users{$fh}->{username} = "~$user_info[1]";
-        for (4..$#user_info) {
-            if ($_ ne $#user_info) { $users{$fh}->{realname} .= "$user_info[$_] " }
-            else { $users{$fh}->{realname} .= $user_info[$_] }
-        }
+        $users{$fh}->{realname} = "@user_info[4..$#user_info]";
+
         if ($users{$fh}->{nick_done}) {
             delete $users{$fh}->{nick_done};
             push @clients_to_connect, $fh;
@@ -359,19 +352,19 @@ sub serv_nick {
         elsif (($nick =~ /^[0-9]/) || ($nick =~ /[^a-zA-Z0-9\^_\-\`\\\[\]\{\}\|]/) || ($nick =~ /^\-/)) {
             send_user_msg_num($fh, $ERR_ERRONEUSNICKNAME, $nick, 'Illegal characters');
         }
-        elsif ($nick =~ /^NickServ$/i) {
+        elsif (lc $nick eq 'nickserv') {
             send_user_msg_num($fh, $ERR_ERRONEUSNICKNAME, 'NickServ', 'No password stealing. Thanks.');
         }
-        elsif ($fhs{lc $nick}) {
-            my $nick_in_use = $fhs{lc $nick};
+        elsif ($users{lc $nick}) {
+            my $nick_in_use = $users{lc $nick};
             send_user_msg_num($fh, $ERR_NICKNAMEINUSE, $users{$nick_in_use}->{nick});
         }
         else {
             # We have to send_user_msg_addr first so that the nick message comes out with the proper address:
             send_user_msg_addr($fh, "NICK :$nick");
             my $old_nick = $users{$fh}->{nick};
-            delete $fhs{lc $old_nick};
-            $fhs{lc $nick} = $fh;
+            delete $users{lc $old_nick};
+            $users{lc $nick} = $fh;
             $users{$fh}->{nick} = $nick;
         }
 
@@ -380,16 +373,16 @@ sub serv_nick {
         if (($nick =~ /^[0-9]/) || ($nick =~ /[^a-zA-Z0-9\^_\-\`\\\[\]\{\}\|]/) || ($nick =~ /^\-/)) {
             send_user_msg_num($fh, $ERR_ERRONEUSNICKNAME, $nick, 'Illegal characters');
         }
-        elsif ($nick =~ /^NickServ$/i) {
+        elsif (lc $nick eq 'nickserv') {
             send_user_msg_num($fh, $ERR_ERRONEUSNICKNAME, 'NickServ', 'No password stealing. Thanks.');
         }
-        elsif ($fhs{lc $nick}) {
-            my $nick_in_use = $fhs{lc $nick};
+        elsif ($users{lc $nick}) {
+            my $nick_in_use = $users{lc $nick};
             send_user_msg_num($fh, $ERR_NICKNAMEINUSE, $users{$nick_in_use}->{nick});
         }
         else {
             $users{$fh}->{nick} = $nick;
-            $fhs{lc $nick} = $fh;
+            $users{lc $nick} = $fh;
             if ($users{$fh}->{user_done}) {
                 delete $users{$fh}->{user_done};
                 push @clients_to_connect, $fh;
@@ -406,8 +399,8 @@ sub serv_privmsg {
     my ($nick, $message_text) = (split / /, $args)[1, 2];
     if (!$message_text) { send_user_msg_num($fh, $ERR_NOTEXTTOSEND); return; }
 
-    if ($fhs{lc $nick}) {
-        my $receiving_fh = $fhs{lc $nick};
+    if ($users{lc $nick}) {
+        my $receiving_fh = $users{lc $nick};
         my $message = ":$users{$fh}->{nick}!$users{$fh}->{username}\@$users{$fh}->{hostname} $args";
         send_user_msg_raw($receiving_fh, $message);
     }
@@ -420,8 +413,8 @@ sub serv_whois {
     my $nick = (split / /, $args)[1];
     if (!$nick) { send_user_msg_num($fh, $ERR_NONICKNAMEGIVEN); return; }
 
-    if ($fhs{lc $nick}) {
-        my $fh_of_whoised_nick = $fhs{lc $nick};
+    if ($users{lc $nick}) {
+        my $fh_of_whoised_nick = $users{lc $nick};
         send_user_msg_num($fh, $RPL_WHOISUSER, $users{$fh_of_whoised_nick}->{nick}, $users{$fh_of_whoised_nick}->{username}, $users{$fh_of_whoised_nick}->{hostname}, $users{$fh_of_whoised_nick}->{realname});
         send_user_msg_num($fh, $RPL_WHOISSERVER, $users{$fh_of_whoised_nick}->{nick}, $local{server}, $local{server_desc});
         send_user_msg_num($fh, $RPL_ENDOFWHOIS, $users{$fh_of_whoised_nick}->{nick});
@@ -461,9 +454,11 @@ sub serv_motd {
 }
 
 sub serv_online {
+    # %fhs is gone. How's this work now?
     my ($fh) = @_;
-    send_user_msg_serv($fh, "NOTICE :Current online nicks ($local{users} total): ");
-    foreach my $fhs (values %fhs) { send_user_msg_serv($fh, "NOTICE :$users{$fhs}->{nick}") }
+    #send_user_msg_serv($fh, "NOTICE :Current online nicks ($local{users} total): ");
+    #foreach my $fhs (values %fhs) { send_user_msg_serv($fh, "NOTICE :$users{$fhs}->{nick}") }
+    send_user_msg_serv($fh, "NOTICE :Broken, fix later.");
 }
 
 ###########################################################################
