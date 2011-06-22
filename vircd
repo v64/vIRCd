@@ -7,7 +7,7 @@ use IO::Select;
 use IO::Socket;
 use Socket;
 
-my $version = 'Veachian-0.04';
+my $version = 'Veachian-0.05';
 my $network = 'V64net';
 my $server  = 'G42.V64.net';
 my @days = qw/ Sun Mon Tue Wed Thu Fri Sat /;
@@ -16,6 +16,7 @@ my $serv_startup = sprintf("%s %s %02d %04d at %02d:%02d:%02d %s", $days[(localt
                                                                    (localtime)[3], (localtime)[5] + 1900, (localtime)[2],
                                                                    (localtime)[1], (localtime)[0], (localtime)[8] ? 'CDT' : 'CST');
 my $motd = 'vircd.motd';
+my $port = '4242';
 
 my %users = ();
 $users{local}{users} = 0;
@@ -39,8 +40,7 @@ $users{global}{operators} = 0;
 $users{local}{channels} = 0;
 $users{global}{channels} = 0;
 
-my @local_nicks = ();
-my @fhs_to_disconnect = ();
+my @clients_to_disconnect = ();
 
 my $serv_listen;
 my $serv_readable;
@@ -48,7 +48,7 @@ my $serv_writable;
 
 print "Starting $version...\n";
 
-$serv_listen = IO::Socket::INET->new(LocalPort => 4242,
+$serv_listen = IO::Socket::INET->new(LocalPort => $port,
                                      Listen    => 10,
                                      Proto     => 'tcp',
                                      Reuse     => 1)
@@ -69,7 +69,6 @@ sub run_server {
         my @ready = IO::Select->select($serv_readable, $serv_writable, undef, 0.1);
 
         foreach my $write_fh (@{$ready[1]}) {
-            print "Sending: $users{$write_fh}{recv_buf}\n";
             my $write = syswrite($write_fh, $users{$write_fh}{recv_buf}, 3072);
             if (!$write) { warn "Error sending data to $users{$write_fh}{nick}: $!\nData will be lost.\n" }
             $users{$write_fh}{recv_buf} = '';
@@ -87,18 +86,20 @@ sub run_server {
                     my @bufs = split(/\n/, $users{$fh}{sent_buf});
                     $users{$fh}{sent_buf} = '';
                     foreach my $args (@bufs) {
-                        print "Received: $args\n";
+                        print "Received from $users{$fh}{real_host_name}: $args\n";
                         process_command($fh, $args);
                     }
                 }
-                else { disconnect_client($fh) }
+                else { push @clients_to_disconnect, $fh }
             }
         }
+
+        if ($clients_to_disconnect[0]) { disconnect_dead_clients() }
     }
 }
 
 sub look_up_host {
-    my $fh = shift;
+    my ($fh) = @_;
     my $other_end = getpeername($fh);
     my $iaddr = (unpack_sockaddr_in($other_end))[1];
     my $actual_ip = inet_ntoa($iaddr);
@@ -115,44 +116,36 @@ sub look_up_host {
 }
 
 sub send_user_msg_addr {
-    my $fh = shift;
+    my ($fh, $output) = @_;
     my $message = ":"."$users{$fh}{nick}"."!"."$users{$fh}{user_name}"."@"."$users{$fh}{real_host_name} ";
-    $message .= (shift) . "\n";
+    $message .= $output . "\n";
     $users{$fh}{recv_buf} .= $message;
     $serv_writable->add($fh); 
 }
 
 sub send_user_msg_serv {
-    my $fh = shift;
+    my ($fh, $output) = @_;
     my $message = ":$server ";
-    $message .= (shift) . "\n";
+    $message .= $output . "\n";
     $users{$fh}{recv_buf} .= $message;
     $serv_writable->add($fh);
 }
 
 sub send_user_msg_raw {
-    my $fh = shift;
-    my $message .= (shift) . "\n";
+    my ($fh, $output) = @_;
+    my $message .= $output . "\n";
     $users{$fh}{recv_buf} .= $message;
     $serv_writable->add($fh);
 }
 
-sub send_user_num {
-    my $fh = shift;
-    my $numeric = shift;
+sub send_user_msg_num {
+    my ($fh, $numeric, $output) = @_;
     my $message;
     if ($users{$fh}{nick}) { $message = ":$server $numeric $users{$fh}{nick} " }
-    else { $message = ":$server $numeric " }
-    $message .= (shift) . "\n";
+    else { $message = ":$server $numeric * " }
+    $message .= $output . "\n";
     $users{$fh}{recv_buf} .= $message;
     $serv_writable->add($fh);
-}
-
-sub send_server {
-    my $fh = shift;
-    my $output = shift;
-    send_user_msg_addr($fh, $output);
-#   Reserved space for sending out to channels.
 }
 
 sub process_login {
@@ -167,25 +160,25 @@ sub process_login {
 }
 
 sub new_logon {
-    my $fh = shift;
+    my ($fh) = @_;
     $users{local}{users}++;
     $users{local}{record_users} = max($users{local}{users}, $users{local}{record_users});
     $users{local}{non_invisible_users}++;
     calc_global_nums();
-    send_user_num($fh, '001', ":Welcome to the $network IRC Network $users{$fh}{nick}".'!'."$users{$fh}{user_name}".'@'."$users{$fh}{real_host_name}");
-    send_user_num($fh, '002', ":Your host is $server, running version $version");
-    send_user_num($fh, '003', ":This server was created $serv_startup");
-    send_user_num($fh, '251', ":There are $users{global}{non_invisible_users} users and $users{global}{invisible_users} invisible on $users{global}{servers} servers");
-    send_user_num($fh, '252', "$users{global}{operators} :operator(s) online");
-    send_user_num($fh, '254', "$users{global}{channels} :channels formed");
-    send_user_num($fh, '255', ":I have $users{local}{users} clients and $users{local}{servers} servers");
-    send_user_num($fh, '265', ":Current Local Users: $users{local}{users}  Max: $users{local}{record_users}");
-    send_user_num($fh, '266', ":Current Global Users: $users{global}{users}  Max: $users{global}{record_users}");
-    send_user_num($fh, '375', ":- $server Message of the Day -");
+    send_user_msg_num($fh, '001', ":Welcome to the $network IRC Network $users{$fh}{nick}".'!'."$users{$fh}{user_name}".'@'."$users{$fh}{real_host_name}");
+    send_user_msg_num($fh, '002', ":Your host is $server, running version $version");
+    send_user_msg_num($fh, '003', ":This server was created $serv_startup");
+    send_user_msg_num($fh, '251', ":There are $users{global}{non_invisible_users} users and $users{global}{invisible_users} invisible on $users{global}{servers} servers");
+    send_user_msg_num($fh, '252', "$users{global}{operators} :operator(s) online");
+    send_user_msg_num($fh, '254', "$users{global}{channels} :channels formed");
+    send_user_msg_num($fh, '255', ":I have $users{local}{users} clients and $users{local}{servers} servers");
+    send_user_msg_num($fh, '265', ":Current Local Users: $users{local}{users}  Max: $users{local}{record_users}");
+    send_user_msg_num($fh, '266', ":Current Global Users: $users{global}{users}  Max: $users{global}{record_users}");
+    send_user_msg_num($fh, '375', ":- $server Message of the Day -");
     open(MOTD, "<vircd.motd") or warn "Error opening MOTD: $!\n";
-    while (<MOTD>) { send_user_num($fh, '372', ":- $_") }
+    while (<MOTD>) { send_user_msg_num($fh, '372', ":- $_") }
     close MOTD;
-    send_user_num($fh, '376', ":End of /MOTD command.");
+    send_user_msg_num($fh, '376', ":End of /MOTD command.");
     
 }
 
@@ -203,29 +196,25 @@ sub calc_global_nums() {
 }
 
 sub process_command {
-    my $fh = shift;
-    my $args = shift;
+    my ($fh, $args) = @_;
     if    ($args =~ m/^USER /) { serv_user($fh, $args) }
     elsif ($args =~ m/^NICK /) { serv_nick($fh, $args) }
-    elsif ($args =~ m/^QUIT /) {
-        $args =~ s/QUIT ://;
-        serv_quit($fh, $args)
-    }
+    elsif ($args =~ m/^PRIVMSG /) { serv_privmsg($fh, $args) }
     else {
         my $command = (split /\s+/, $args)[0];
         $command =~ tr/A-Z/a-z/;
-        send_user_num($fh, '421', "$command :Unknown command or command not yet implemented")
+        send_user_msg_num($fh, '421', "$command :Unknown command or command not yet implemented")
     }
 }
 
 sub serv_user {
-    my $fh = shift;
-    my $args = shift;
+    my ($fh, $args) = @_;
     if (!$users{$fh}{connected}) {
         my @user_info = split /\s+/, $args;
-        if (@user_info < 5) { send_user_num($fh, '461', "USER :Not enough parameters") }
+        if (@user_info < 5) { send_user_msg_num($fh, '461', "USER :Not enough parameters") }
         else {
             $users{$fh}{user_name} = '~' . $user_info[1];
+            $user_info[4] =~ s/://;
             $users{$fh}{real_name} = $user_info[4];
  
            if ($users{$fh}{nick}) {
@@ -234,18 +223,28 @@ sub serv_user {
             }
         }
     }
-    else { send_user_num($fh, '462', ":You may not reregister") }
+    else { send_user_msg_num($fh, '462', ":You may not reregister") }
 }
 
 sub serv_nick {
-    my $fh = shift;
-    my $args = shift;
+    my ($fh, $args) = @_;
     if (!$users{$fh}{connected}) {
         my $nick = (split /\s+/, $args)[1];
-        if (!$nick) { send_user_num($fh, '431', ":No nickname given") }
+        $nick =~ s/://;
+        if (!$nick) {
+            send_user_msg_num($fh, '431', ":No nickname given");
+            return;
+        }
+        
+        elsif ($users{local}{$nick}) {
+            send_user_msg_num($fh, '433', "$nick :Nickname is already in use.");
+            return;
+        }
+        
         else {
             $users{$fh}{nick} = $nick;
-            push @local_nicks, $nick;
+            $users{local}{$nick} = 1;
+            $users{local}{fh}{$nick} = $fh;
         }
 
         if ($users{$fh}{user_name}) {
@@ -255,36 +254,49 @@ sub serv_nick {
     }
     else {
         my $nick = (split /\s+/, $args)[1];
-        if (!$nick) { send_user_num($fh, '431', ":No nickname given") }
+        $nick =~ s/://;
+        if (!$nick) {
+            send_user_msg_num($fh, '431', ":No nickname given");
+            return;
+        }
+
+        elsif ($nick eq $users{$fh}{nick}) { return }
+
+        elsif ($users{local}{$nick}) {
+            send_user_msg_num($fh, '433', "$nick :Nickname is already in use.");
+            return;
+        }
+        
         else {
-            $nick =~ s/://;
-            foreach (@local_nicks) {
-                if ($_ eq $nick) {
-                    send_user_num($fh, '433', "$nick :Nickname is already in use.");
-                    last;
-                }
-                else {
-                    send_server($fh, "NICK :$nick");
-                    $users{$fh}{nick} = $nick;
-                    $_ = $nick;
-                }
-            }
+            send_user_msg_addr($fh, "NICK :$nick");
+            $users{local}{$users{$fh}{nick}} = 0;
+            $users{local}{$nick} = 1;
+            $users{local}{fh}{$nick} = $fh;
+            $users{$fh}{nick} = $nick;
         }
     }
 }
 
-sub serv_quit {
-    my $fh = shift;
-    my $args = shift;
-    send_user_msg_raw($fh, "ERROR :Closing Link: $users{$fh}{nick}"."["."$users{$fh}{real_host_name}"."] (Quit: $args)");
-    disconnect_client();
+sub serv_privmsg {
+    my ($fh, $args) = @_;
+    my $nick = (split /\s+/, $args)[1];
+    if (!$users{local}{$nick}) {
+        send_user_msg_num($fh, '401', "$nick :No such nick");
+        return;
+    }
+    else {
+        my $send_to_fh = $users{local}{fh}{$nick};
+        send_user_msg_raw($send_to_fh, ":"."$users{$fh}{nick}"."!"."$users{$fh}{user_name}"."@"."$users{$fh}{real_host_name} $args");
+    }
 }
 
-sub disconnect_client {
-    my $fh = shift;
-    print "Client disconnected: $users{$fh}{real_host_name}\n" if $users{$fh}{real_host_name};
-    $serv_readable->remove($fh);
-    $serv_writable->remove($fh);
-    $fh->close;
-    delete $users{$fh};
+sub disconnect_dead_clients {
+    foreach my $fh (@clients_to_disconnect) {
+        shift @clients_to_disconnect;
+        print "Client disconnected: $users{$fh}{real_host_name}\n";
+        $serv_readable->remove($fh);
+        $serv_writable->remove($fh);
+        delete $users{$fh};
+        $fh->close;
+    }
 }
