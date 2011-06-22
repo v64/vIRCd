@@ -1,23 +1,27 @@
 #!/usr/bin/perl
 
-use strict;
+use strict; # Like every good program, this one starts with use strict;
 use warnings;
 use v5.6.1;
 use IO::Select;
 use IO::Socket;
 use Socket;
 
-my $version = 'Veachian-0.06';
+my $version = 'Veachian-0.07';
 my $network = 'V64net';
 my $server  = 'G42.V64.net';
 my @days = qw/ Sun Mon Tue Wed Thu Fri Sat /;
 my @months = qw/ Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec /;
+
+# Supply a date to show when the server was started.
 my $serv_startup = sprintf("%s %s %02d %04d at %02d:%02d:%02d %s", $days[(localtime)[6]], $months[(localtime)[4]],
                                                                    (localtime)[3], (localtime)[5] + 1900, (localtime)[2],
                                                                    (localtime)[1], (localtime)[0], (localtime)[8] ? 'CDT' : 'CST');
 my $motd = 'vircd.motd';
 my $port = '4242';
 my $serv_desc = 'The Veachian IRCd - Written entirely in the Perl programming language.';
+
+# Some initialization:
 
 my %users = ();
 $users{local}{users} = 0;
@@ -43,9 +47,9 @@ $users{global}{channels} = 0;
 
 my @clients_to_disconnect = ();
 
-my $serv_listen;
-my $serv_readable;
-my $serv_writable;
+my $serv_listen;   # Socket listener.
+my $serv_readable; # Basically a list of every connecting socket. Reads data from them.
+my $serv_writable; # All sockets with data that needs to be sent to them.
 
 print "Starting $version...\n";
 
@@ -87,7 +91,8 @@ sub run_server {
                     my @bufs = split(/\n/, $users{$fh}{sent_buf});
                     $users{$fh}{sent_buf} = '';
                     foreach my $args (@bufs) {
-                        print "Received from $users{$fh}{real_host_name}: $args\n";
+                        if ($users{$fh}{nick}) { print "Received from $users{$fh}{real_host_name} ($users{$fh}{nick}): $args\n" }
+                        else { print "Received from $users{$fh}{real_host_name}: $args\n" }
                         process_command($fh, $args);
                     }
                 }
@@ -165,23 +170,11 @@ sub new_logon {
     $users{local}{users}++;
     $users{local}{record_users} = max($users{local}{users}, $users{local}{record_users});
     $users{local}{non_invisible_users}++;
-    calc_global_nums();
     send_user_msg_num($fh, '001', ":Welcome to the $network IRC Network $users{$fh}{nick}".'!'."$users{$fh}{user_name}".'@'."$users{$fh}{real_host_name}");
     send_user_msg_num($fh, '002', ":Your host is $server, running version $version");
     send_user_msg_num($fh, '003', ":This server was created $serv_startup");
-    send_user_msg_num($fh, '251', ":There are $users{global}{non_invisible_users} users and $users{global}{invisible_users} invisible on $users{global}{servers} servers");
-    send_user_msg_num($fh, '252', "$users{global}{operators} :operator(s) online");
-    send_user_msg_num($fh, '253', "0 :unknown connection(s)");
-    send_user_msg_num($fh, '254', "$users{global}{channels} :channels formed");
-    send_user_msg_num($fh, '255', ":I have $users{local}{users} clients and $users{local}{servers} servers");
-    send_user_msg_num($fh, '265', ":Current Local Users: $users{local}{users}  Max: $users{local}{record_users}");
-    send_user_msg_num($fh, '266', ":Current Global Users: $users{global}{users}  Max: $users{global}{record_users}");
-    send_user_msg_num($fh, '375', ":- $server Message of the Day -");
-    open(MOTD, "<vircd.motd") or warn "Error opening MOTD: $!\n";
-    while (<MOTD>) { send_user_msg_num($fh, '372', ":- $_") }
-    close MOTD;
-    send_user_msg_num($fh, '376', ":End of /MOTD command.");
-    
+    serv_lusers($fh);
+    serv_motd($fh);    
 }
 
 sub max { ($_[0] > $_[1]) ? $_[0] : $_[1] }
@@ -199,35 +192,40 @@ sub calc_global_nums() {
 
 sub process_command {
     my ($fh, $args) = @_;
-    if    ($args =~ m/^USER /i)    { serv_user($fh, $args) }
-    elsif ($args =~ m/^NICK /i)    { serv_nick($fh, $args) }
-    elsif ($args =~ m/^PRIVMSG /i) { serv_privmsg($fh, $args) }
-    elsif ($args =~ m/^WHOIS /i)   { serv_whois($fh, $args) }
-    elsif ($args =~ m/^LUSERS/i)   { serv_lusers($fh) }
-    elsif ($args =~ m/^MOTD/i)     { serv_motd($fh) }
-    elsif ($args =~ m/^NOTICE /i)  { serv_privmsg($fh, $args) }
-    else {
-        my $command = (split /\s+/, $args)[0];
-        $command =~ tr/A-Z/a-z/;
-        send_user_msg_num($fh, '421', "$command :Unknown command or command not yet implemented")
-    }
+    my $command = (split /\s+/, $args)[0];
+    $command =~ tr/A-Z/a-z/;
+    $command .= ' ';
+
+    if    ($command =~ m/^user /)    { serv_user($fh, $args) }
+    elsif ($command =~ m/^nick /)    { serv_nick($fh, $args) }
+    elsif ($command =~ m/^privmsg /) { serv_privmsg($fh, $args) }
+    elsif ($command =~ m/^whois /)   { serv_whois($fh, $args) }
+    elsif ($command =~ m/^lusers /)  { serv_lusers($fh) }
+    elsif ($command =~ m/^motd /)    { serv_motd($fh) }
+    elsif ($command =~ m/^notice /)  { serv_privmsg($fh, $args) }
+
+    else { send_user_msg_num($fh, '421', "$command :Unknown command or command not yet implemented") }
 }
 
 sub serv_user {
     my ($fh, $args) = @_;
+    my @user_info = split /\s+/, $args;
     if (!$users{$fh}{connected}) {
-        my @user_info = split /\s+/, $args;
         if (@user_info < 5) { send_user_msg_num($fh, '461', "USER :Not enough parameters") }
         else {
             $users{$fh}{user_name} = '~' . $user_info[1];
-            $users{$fh}{real_name} = $user_info[4];
- 
-           if ($users{$fh}{nick}) {
-                $users{$fh}{connected} = 1;
-                new_logon($fh);
+            for (4..$#user_info) {
+                if ($_ ne $#user_info) { $users{$fh}{real_name} .= "$user_info[$_] " }
+                else { $users{$fh}{real_name} .= $user_info[$_] }
             }
         }
     }
+           
+    if ($users{$fh}{nick}) {
+        $users{$fh}{connected} = 1;
+        new_logon($fh);
+    }
+
     else { send_user_msg_num($fh, '462', ":You may not reregister") }
 }
 
@@ -332,7 +330,7 @@ sub serv_motd {
     while (<MOTD>) { send_user_msg_num($fh, '372', ":- $_") }
     close MOTD;
     send_user_msg_num($fh, '376', ":End of /MOTD command.");
-}    
+}
 
 sub disconnect_dead_clients {
     foreach my $fh (@clients_to_disconnect) {
