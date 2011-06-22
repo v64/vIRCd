@@ -93,6 +93,9 @@ $commhash{lusers}  = \&serv_lusers;
 $commhash{motd}    = \&serv_motd;
 $commhash{notice}  = \&serv_privmsg;
 $commhash{online}  = \&serv_online;
+$commhash{join}    = \&serv_join;
+
+my %chans;
 ###############################################################################
 
 my @clients_to_connect; # Array containing a list of filehandles that just connected.
@@ -101,14 +104,14 @@ my %users;  # Hash containing filehandles as keys, references to hashes as value
 my %local;  # Hash containing all local info for the server. Ex. $local{users}
 
 # Will be replaced to be read from a config file later.
-$local{version}     = 'Veachian-0.23';
+$local{version}     = 'Veachian-0.24';
 $local{network}     = 'V64net';
 $local{server}      = 'irc.V64.net';
 $local{server_desc} = 'The Veachian IRCd - Written entirely in the Perl programming language.';
 $local{start_date}  =  get_date();
 $local{motd_file}   = 'vircd.motd';
 $local{port}        = 4242;
-$local{read_size}   = 1048576;
+$local{read_size}   = 1_048_576;
 
 my $debug = 0;
 
@@ -190,12 +193,14 @@ while (1) {
 # Does DNS and reverse DNS to find socket's full and real host.
 sub look_up_host {
     my ($fh) = @_;
-    my $iaddr = (unpack_sockaddr_in(getpeername($fh)))[1];
+    my $other_end = getpeername($fh);
+    my $iaddr = (unpack_sockaddr_in($other_end))[1];
     my $actual_ip = inet_ntoa($iaddr);
-    my $reverse_dns = gethostbyaddr($iaddr, AF_INET);
+    my $claimed_hostname = gethostbyaddr($iaddr, AF_INET);
+    my $name_lookup = (gethostbyname($claimed_hostname))[0];
 
-    if ($reverse_dns) {
-        $users{$fh}->{hostname} = $reverse_dns;
+    if ($name_lookup) {
+        $users{$fh}->{hostname} = $name_lookup;
         1;
     }
     else {
@@ -324,8 +329,10 @@ sub serv_user {
     if (!$users{$fh}->{connected}) {
         if (@user_info < 5) { send_user_msg_num($fh, $ERR_NEEDMOREPARAMS, 'USER'); return; }
         $users{$fh}->{username} = "~$user_info[1]";
-        $users{$fh}->{realname} = "@user_info[4..$#user_info]";
-
+        for (4..$#user_info) {
+            if ($_ ne $#user_info) { $users{$fh}->{realname} .= "$user_info[$_] " }
+            else { $users{$fh}->{realname} .= $user_info[$_] }
+        }
         if ($users{$fh}->{nick_done}) {
             delete $users{$fh}->{nick_done};
             push @clients_to_connect, $fh;
@@ -352,7 +359,7 @@ sub serv_nick {
         elsif (($nick =~ /^[0-9]/) || ($nick =~ /[^a-zA-Z0-9\^_\-\`\\\[\]\{\}\|]/) || ($nick =~ /^\-/)) {
             send_user_msg_num($fh, $ERR_ERRONEUSNICKNAME, $nick, 'Illegal characters');
         }
-        elsif (lc $nick eq 'nickserv') {
+        elsif ($nick =~ /^NickServ$/i) {
             send_user_msg_num($fh, $ERR_ERRONEUSNICKNAME, 'NickServ', 'No password stealing. Thanks.');
         }
         elsif ($users{lc $nick}) {
@@ -373,7 +380,7 @@ sub serv_nick {
         if (($nick =~ /^[0-9]/) || ($nick =~ /[^a-zA-Z0-9\^_\-\`\\\[\]\{\}\|]/) || ($nick =~ /^\-/)) {
             send_user_msg_num($fh, $ERR_ERRONEUSNICKNAME, $nick, 'Illegal characters');
         }
-        elsif (lc $nick eq 'nickserv') {
+        elsif ($nick =~ /^NickServ$/i) {
             send_user_msg_num($fh, $ERR_ERRONEUSNICKNAME, 'NickServ', 'No password stealing. Thanks.');
         }
         elsif ($users{lc $nick}) {
@@ -459,6 +466,18 @@ sub serv_online {
     #send_user_msg_serv($fh, "NOTICE :Current online nicks ($local{users} total): ");
     #foreach my $fhs (values %fhs) { send_user_msg_serv($fh, "NOTICE :$users{$fhs}->{nick}") }
     send_user_msg_serv($fh, "NOTICE :Broken, fix later.");
+}
+
+sub serv_join {
+    my ($fh, $args) = @_;
+    my $channel = (split ' ', $args)[1];
+    if ($chans{$channel}) { }
+    else {
+        $chans{$channel}->{time} = time;
+        $chans{$channel}->{users}->{$users{$fh}->{nick}} = "\@$users{$fh}->{nick}";
+        $chans{$channel}->{mode} = '';
+        send_user_msg_addr($fh, "JOIN :$channel");
+    }
 }
 
 ###########################################################################
