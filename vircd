@@ -7,7 +7,7 @@ use IO::Select;
 use IO::Socket;
 use Socket;
 
-my $version = 'Veachian-0.03';
+my $version = 'Veachian-0.04';
 my $network = 'V64net';
 my $server  = 'G42.V64.net';
 my @days = qw/ Sun Mon Tue Wed Thu Fri Sat /;
@@ -39,6 +39,9 @@ $users{global}{operators} = 0;
 $users{local}{channels} = 0;
 $users{global}{channels} = 0;
 
+my @local_nicks = ();
+my @fhs_to_disconnect = ();
+
 my $serv_listen;
 my $serv_readable;
 my $serv_writable;
@@ -66,6 +69,7 @@ sub run_server {
         my @ready = IO::Select->select($serv_readable, $serv_writable, undef, 0.1);
 
         foreach my $write_fh (@{$ready[1]}) {
+            print "Sending: $users{$write_fh}{recv_buf}\n";
             my $write = syswrite($write_fh, $users{$write_fh}{recv_buf}, 3072);
             if (!$write) { warn "Error sending data to $users{$write_fh}{nick}: $!\nData will be lost.\n" }
             $users{$write_fh}{recv_buf} = '';
@@ -82,17 +86,12 @@ sub run_server {
                 if ($read) {
                     my @bufs = split(/\n/, $users{$fh}{sent_buf});
                     $users{$fh}{sent_buf} = '';
-                    foreach (@bufs) {
-                        process_command($fh, $_);
+                    foreach my $args (@bufs) {
+                        print "Received: $args\n";
+                        process_command($fh, $args);
                     }
                 }
-                else {         
-                    print "Client disconnected: $users{$fh}{real_host_name}\n";
-                    $serv_readable->remove($fh);
-                    $serv_writable->remove($fh);
-                    $fh->close;
-                    delete $users{$fh};
-                }
+                else { disconnect_client($fh) }
             }
         }
     }
@@ -115,10 +114,25 @@ sub look_up_host {
     @values;
 }
 
-sub send_user_msg {
+sub send_user_msg_addr {
+    my $fh = shift;
+    my $message = ":"."$users{$fh}{nick}"."!"."$users{$fh}{user_name}"."@"."$users{$fh}{real_host_name} ";
+    $message .= (shift) . "\n";
+    $users{$fh}{recv_buf} .= $message;
+    $serv_writable->add($fh); 
+}
+
+sub send_user_msg_serv {
     my $fh = shift;
     my $message = ":$server ";
     $message .= (shift) . "\n";
+    $users{$fh}{recv_buf} .= $message;
+    $serv_writable->add($fh);
+}
+
+sub send_user_msg_raw {
+    my $fh = shift;
+    my $message .= (shift) . "\n";
     $users{$fh}{recv_buf} .= $message;
     $serv_writable->add($fh);
 }
@@ -134,14 +148,21 @@ sub send_user_num {
     $serv_writable->add($fh);
 }
 
+sub send_server {
+    my $fh = shift;
+    my $output = shift;
+    send_user_msg_addr($fh, $output);
+#   Reserved space for sending out to channels.
+}
+
 sub process_login {
     my $fh = $serv_listen->accept;
     $serv_readable->add($fh);
-    send_user_msg($fh, "NOTICE AUTH :*** Looking up your hostname...");
+    send_user_msg_serv($fh, "NOTICE AUTH :*** Looking up your hostname...");
     my $value;
     ($value, $users{$fh}{real_host_name}) = look_up_host($fh);
-    if (!$value) { send_user_msg($fh, "NOTICE AUTH :*** Hostname not resolved. Using IP instead: ($users{$fh}{hostname})") }
-    else { send_user_msg($fh, "NOTICE AUTH :*** Hostname found: $users{$fh}{real_host_name}") }
+    if (!$value) { send_user_msg_serv($fh, "NOTICE AUTH :*** Hostname not resolved. Using IP instead: ($users{$fh}{hostname})") }
+    else { send_user_msg_serv($fh, "NOTICE AUTH :*** Hostname found: $users{$fh}{real_host_name}") }
     $users{$fh}{connected} = 0;
 }
 
@@ -183,36 +204,87 @@ sub calc_global_nums() {
 
 sub process_command {
     my $fh = shift;
-    $_ = shift;
-    if    (m/^USER /) { serv_user($fh) }
-    elsif (m/^NICK /) { serv_nick($fh) }
+    my $args = shift;
+    if    ($args =~ m/^USER /) { serv_user($fh, $args) }
+    elsif ($args =~ m/^NICK /) { serv_nick($fh, $args) }
+    elsif ($args =~ m/^QUIT /) {
+        $args =~ s/QUIT ://;
+        serv_quit($fh, $args)
+    }
+    else {
+        my $command = (split /\s+/, $args)[0];
+        $command =~ tr/A-Z/a-z/;
+        send_user_num($fh, '421', "$command :Unknown command or command not yet implemented")
+    }
 }
 
 sub serv_user {
     my $fh = shift;
+    my $args = shift;
     if (!$users{$fh}{connected}) {
-        my @user_info = split(' ');
+        my @user_info = split /\s+/, $args;
         if (@user_info < 5) { send_user_num($fh, '461', "USER :Not enough parameters") }
         else {
             $users{$fh}{user_name} = '~' . $user_info[1];
             $users{$fh}{real_name} = $user_info[4];
-            if ($users{$fh}{nick}) {
+ 
+           if ($users{$fh}{nick}) {
                 $users{$fh}{connected} = 1;
                 new_logon($fh);
             }
         }
     }
+    else { send_user_num($fh, '462', ":You may not reregister") }
 }
 
 sub serv_nick {
     my $fh = shift;
+    my $args = shift;
     if (!$users{$fh}{connected}) {
-        my $nick = (split(' '))[1];
-        if (!$nick) { send_user_num($fh, '461', "NICK :Not enough parameters") }
-        else { $users{$fh}{nick} = $nick }
+        my $nick = (split /\s+/, $args)[1];
+        if (!$nick) { send_user_num($fh, '431', ":No nickname given") }
+        else {
+            $users{$fh}{nick} = $nick;
+            push @local_nicks, $nick;
+        }
+
         if ($users{$fh}{user_name}) {
             $users{$fh}{connected} = 1;
             new_logon($fh);
         }
     }
+    else {
+        my $nick = (split /\s+/, $args)[1];
+        if (!$nick) { send_user_num($fh, '431', ":No nickname given") }
+        else {
+            $nick =~ s/://;
+            foreach (@local_nicks) {
+                if ($_ eq $nick) {
+                    send_user_num($fh, '433', "$nick :Nickname is already in use.");
+                    last;
+                }
+                else {
+                    send_server($fh, "NICK :$nick");
+                    $users{$fh}{nick} = $nick;
+                    $_ = $nick;
+                }
+            }
+        }
+    }
+}
+
+sub serv_quit {
+    my $fh = shift;
+    my $args = shift;
+    send_user_msg_raw($fh, "ERROR :Closing Link: $users{$fh}{nick}"."["."$users{$fh}{real_host_name}"."] (Quit: $args)");
+    disconnect_client();
+}
+
+sub disconnect_client {
+    my $fh = shift;
+    print "Client disconnected: $users{$fh}{real_host_name}\n" if $users{$fh}{real_host_name};
+    $serv_readable->remove($fh);
+    $serv_writable->remove($fh);
+    $fh->close;
+    delete $users{$fh};
 }
