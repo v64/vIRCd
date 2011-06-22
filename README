@@ -1,6 +1,6 @@
 vIRCd (Veachian Internet Relay Chat Daemon) is an IRC server written in Perl (old Perl from 2001, circa version 5.6.1). As the original README states, it was a way for me to learn some Perl and do something interesting in the process. Most notably, since I developed vIRCd on Windows, I wasn't able to get threads working, so the server uses a synchronous messaging queue for handling all the input and output.
 
-I wrote it 9 years ago in 2001, back when I was a high school freshman, and hadn't really thought about it until now when, while Googling my name, I stumbled upon this old Perl Monks thread that I posted the source in: http://www.perlmonks.org/?node_id=155351
+I wrote it 10 years ago in 2001, back when I was a high school freshman, and hadn't really thought about it until now when, while Googling my name, I stumbled upon this old Perl Monks thread I made about itn: http://www.perlmonks.org/?node_id=155351
 
 Randal Schwartz (yes, that one) chided me about the post, saying the links to my personal website for a tarball of the source were pointless since the links could disappear at any moment, and that I should've made a CPAN module instead.
 
