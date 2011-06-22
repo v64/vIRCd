@@ -1,0 +1,36 @@
+######################################################################################################################
+# Some detailed hash info:
+# $local{data}     - Data local to the server.
+#    users               - Users on the server.
+#    record_users        - Record (max) number of users.
+#    invisible_users     - Usermode +i clients on the server.
+#    non_invisible_users - Usermode -i clients on the server.
+#    servers             - Servers server is linked to, excluding self.
+#    operators           - IRCops on the server.
+#    channels            - Channels started by a client on that server.
+# $global{data}      - Data local to the network.
+#    users               - Users on the network.
+#    record_users        - Record (max) number of users.
+#    invisible_users     - Usermode +i clients on the network.
+#    non_invisible_users - Usermode -i clients on the network.
+#    servers             - Total servers on the network.
+#    operators           - IRCops on the network.
+#    channels            - Channels on the server.
+# $users{$fh}{data}  - Information about that unique filehandle/socket/client.
+#    recv_buf            - The buffer containing all data ready to be received by the client.
+#    sent_buf            - The buffer containing all data ready to be read from the client.
+#    nick                - Nickname of the client, all lowercase letters.
+#    nick_cs             - Nickname of client, case-sensitive original.
+#    hostname            - Real hostname of the client.
+#    username            - Ident as reported by USER. Not real, prefixed with a ~.
+#    connected           - Used by NICK and USER to tell whether or not the client is connected or in pre-connection.
+#    realname            - The client's real name as reported for a /whois.
+# $fhs{data}         - Used to retrieve a client's filehandle knowing only their nick.
+#    nick                - Returns the filehandle of the user with that nick. Also used as a list of all logged on nicks.
+#
+# Other variables used throughout the program in a local scope:
+# $fh                    - Filehandle to the current socket we're dealing with.
+# $args                  - The arguments provided to a subroutine.
+# $output                - Like $args, but used to retrieve the message in subroutines that send data.
+# $message               - $message is the final result after $output is formatted for the current data.
+######################################################################################################################
