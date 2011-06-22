@@ -7,7 +7,7 @@ use IO::Select;
 use IO::Socket;
 use Socket;
 
-my $version = 'Veachian-0.05';
+my $version = 'Veachian-0.06';
 my $network = 'V64net';
 my $server  = 'G42.V64.net';
 my @days = qw/ Sun Mon Tue Wed Thu Fri Sat /;
@@ -17,6 +17,7 @@ my $serv_startup = sprintf("%s %s %02d %04d at %02d:%02d:%02d %s", $days[(localt
                                                                    (localtime)[1], (localtime)[0], (localtime)[8] ? 'CDT' : 'CST');
 my $motd = 'vircd.motd';
 my $port = '4242';
+my $serv_desc = 'The Veachian IRCd - Written entirely in the Perl programming language.';
 
 my %users = ();
 $users{local}{users} = 0;
@@ -170,6 +171,7 @@ sub new_logon {
     send_user_msg_num($fh, '003', ":This server was created $serv_startup");
     send_user_msg_num($fh, '251', ":There are $users{global}{non_invisible_users} users and $users{global}{invisible_users} invisible on $users{global}{servers} servers");
     send_user_msg_num($fh, '252', "$users{global}{operators} :operator(s) online");
+    send_user_msg_num($fh, '253', "0 :unknown connection(s)");
     send_user_msg_num($fh, '254', "$users{global}{channels} :channels formed");
     send_user_msg_num($fh, '255', ":I have $users{local}{users} clients and $users{local}{servers} servers");
     send_user_msg_num($fh, '265', ":Current Local Users: $users{local}{users}  Max: $users{local}{record_users}");
@@ -197,9 +199,13 @@ sub calc_global_nums() {
 
 sub process_command {
     my ($fh, $args) = @_;
-    if    ($args =~ m/^USER /) { serv_user($fh, $args) }
-    elsif ($args =~ m/^NICK /) { serv_nick($fh, $args) }
-    elsif ($args =~ m/^PRIVMSG /) { serv_privmsg($fh, $args) }
+    if    ($args =~ m/^USER /i)    { serv_user($fh, $args) }
+    elsif ($args =~ m/^NICK /i)    { serv_nick($fh, $args) }
+    elsif ($args =~ m/^PRIVMSG /i) { serv_privmsg($fh, $args) }
+    elsif ($args =~ m/^WHOIS /i)   { serv_whois($fh, $args) }
+    elsif ($args =~ m/^LUSERS/i)   { serv_lusers($fh) }
+    elsif ($args =~ m/^MOTD/i)     { serv_motd($fh) }
+    elsif ($args =~ m/^NOTICE /i)  { serv_privmsg($fh, $args) }
     else {
         my $command = (split /\s+/, $args)[0];
         $command =~ tr/A-Z/a-z/;
@@ -214,7 +220,6 @@ sub serv_user {
         if (@user_info < 5) { send_user_msg_num($fh, '461', "USER :Not enough parameters") }
         else {
             $users{$fh}{user_name} = '~' . $user_info[1];
-            $user_info[4] =~ s/://;
             $users{$fh}{real_name} = $user_info[4];
  
            if ($users{$fh}{nick}) {
@@ -272,6 +277,7 @@ sub serv_nick {
             $users{local}{$users{$fh}{nick}} = 0;
             $users{local}{$nick} = 1;
             $users{local}{fh}{$nick} = $fh;
+            $users{local}{fh}{$users{$fh}{nick}} = undef;
             $users{$fh}{nick} = $nick;
         }
     }
@@ -290,13 +296,56 @@ sub serv_privmsg {
     }
 }
 
+sub serv_whois {
+    my ($fh, $args) = @_;
+    my $nick = (split /\s+/, $args)[1];
+    if (!$users{local}{$nick}) {
+        send_user_msg_num($fh, '401', "$nick :No such nick");
+        send_user_msg_num($fh, '318', ":End of /WHOIS list.");
+        return;
+    }
+
+    else {
+        my $fh_of_nick = $users{local}{fh}{$nick};
+        send_user_msg_num($fh, '311', "$users{$fh_of_nick}{nick} $users{$fh_of_nick}{user_name} $users{$fh_of_nick}{real_host_name} * $users{$fh_of_nick}{real_name}");
+        send_user_msg_num($fh, '312', "$users{$fh_of_nick}{nick} $server :"."$serv_desc");
+        send_user_msg_num($fh, '318', ":End of /WHOIS list.");
+    }
+}
+
+sub serv_lusers {
+    my ($fh) = @_;
+    calc_global_nums();
+    send_user_msg_num($fh, '251', ":There are $users{global}{non_invisible_users} users and $users{global}{invisible_users} invisible on $users{global}{servers} servers");
+    send_user_msg_num($fh, '252', "$users{global}{operators} :operator(s) online");
+    send_user_msg_num($fh, '253', "0 :unknown connection(s)");
+    send_user_msg_num($fh, '254', "$users{global}{channels} :channels formed");
+    send_user_msg_num($fh, '255', ":I have $users{local}{users} clients and $users{local}{servers} servers");
+    send_user_msg_num($fh, '265', ":Current Local Users: $users{local}{users}  Max: $users{local}{record_users}");
+    send_user_msg_num($fh, '266', ":Current Global Users: $users{global}{users}  Max: $users{global}{record_users}");
+}
+
+sub serv_motd {
+    my ($fh) = @_;
+    send_user_msg_num($fh, '375', ":- $server Message of the Day -");
+    open(MOTD, "<vircd.motd") or warn "Error opening MOTD: $!\n";
+    while (<MOTD>) { send_user_msg_num($fh, '372', ":- $_") }
+    close MOTD;
+    send_user_msg_num($fh, '376', ":End of /MOTD command.");
+}    
+
 sub disconnect_dead_clients {
     foreach my $fh (@clients_to_disconnect) {
         shift @clients_to_disconnect;
         print "Client disconnected: $users{$fh}{real_host_name}\n";
         $serv_readable->remove($fh);
         $serv_writable->remove($fh);
+        $users{local}{$users{$fh}{nick}} = undef;
+        $users{local}{fh}{$users{$fh}{nick}} = undef;
+        if (!$users{$fh}{mode}{i}) { $users{local}{non_invisible_users}-- }
+        else { $users{local}{invisible_users}-- }
         delete $users{$fh};
+        $users{local}{users}--;
         $fh->close;
     }
 }
