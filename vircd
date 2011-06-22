@@ -13,10 +13,9 @@ use IO::Socket;
 use Socket;
 
 # TODO: Modularize code.
-#       Better solution to if/elsif in process_command() (serv_ . $command? How could unregged check work?)
+#       Better solution to if/elsif in process_command() ({serv_ . $command}? How could unregged check work?)
 #       Make serv_[user|nick] not depend on global @clients_to_connect, make that local to while loop.
 #       No subroutines fiddle around with globals (too much)
-#       Take out all the global stuff. It's far too late in design to make it multi-server. Wait until 2.0.
 #       Subroutine that's safer than doing $fhs{lc $nick} (is it worth it?)
 #       Constants ($local{} and the like) constant in sprintf
 
@@ -92,11 +91,10 @@ my @clients_to_connect; # Array containing a list of filehandles that just conne
 
 my %users;  # Hash containing filehandles as keys, references to hashes as values. Hashes contain user info.
 my %local;  # Hash containing all local info for the server. Ex. $local{users}
-my %global; # Hash containing all global info for the network. Ex. $global{users}
 my %fhs;    # Hash mapping nicks to filehandles.
 
 # Will be replaced to be read from a config file later.
-$local{version}     = 'Veachian-0.20';
+$local{version}     = 'Veachian-0.21';
 $local{network}     = 'V64net';
 $local{server}      = 'G42.V64.net';
 $local{server_desc} = 'The Veachian IRCd - Written entirely in the Perl programming language.';
@@ -108,19 +106,12 @@ $local{read_size}   = 1_048_576;
 my $debug = 0;
 
 $local{users} = 0;
-$global{users} = 0;
 $local{record_users} = 0;
-$global{record_users} = 0;
 $local{invisible_users} = 0;
-$global{invisible_users} = 0;
 $local{non_invisible_users} = 0;
-$global{non_invisible_users} = 0;
-$local{servers} = 0;
-$global{servers} = 1;
+$local{servers} = 1;
 $local{operators} = 0;
-$global{operators} = 0;
 $local{channels} = 0;
-$global{channels} = 0;
 
 print "Starting $local{version}......";
 
@@ -239,6 +230,10 @@ sub disconnect_dead_clients {
 
     foreach my $fh (@$clients_to_disconnect) {
         print "Client disconnected: $users{$fh}->{hostname} ($users{$fh}->{nick})\n";
+        my $write = syswrite($fh, $users{$fh}->{recv_buf});
+        if ($users{$fh}->{nick} && $debug) { print "Sending to $users{$fh}->{hostname} ($users{$fh}->{nick}): $users{$fh}->{recv_buf}\n" }
+        elsif ($debug) { print "Sending to $users{$fh}->{hostname}: $users{$fh}->{recv_buf}\n" }
+        if (!$write) { warn "Could not flush $users{$fh}->{nick}'s data.\n" }
         $local{reader}->remove($fh);
         $local{sender}->remove($fh);
         my $nick = $users{$fh}->{nick};
@@ -439,14 +434,13 @@ sub serv_whois {
 # Returns server connection data.
 sub serv_lusers {
     my ($fh) = @_;
-    calc_global_nums();
-    send_user_msg_num($fh, $RPL_LUSERCLIENT, $global{non_invisible_users}, $global{invisible_users}, $global{servers});
-    send_user_msg_num($fh, $RPL_LUSEROP, $global{operators});
+    send_user_msg_num($fh, $RPL_LUSERCLIENT, $local{non_invisible_users}, $local{invisible_users}, $local{servers});
+    send_user_msg_num($fh, $RPL_LUSEROP, $local{operators});
     send_user_msg_num($fh, $RPL_LUSERUNKNOWN);
-    send_user_msg_num($fh, $RPL_LUSERCHANNELS, $global{channels});
+    send_user_msg_num($fh, $RPL_LUSERCHANNELS, $local{channels});
     send_user_msg_num($fh, $RPL_LUSERME, $local{users}, $local{servers});
     send_user_msg_num($fh, $RPL_LOCALUSERS, $local{users}, $local{record_users});
-    send_user_msg_num($fh, $RPL_GLOBALUSERS, $global{users}, $global{record_users});
+    send_user_msg_num($fh, $RPL_GLOBALUSERS, $local{users}, $local{record_users});
 }
 
 # Returns the message of the day.
@@ -463,18 +457,6 @@ sub serv_motd {
         send_user_msg_num($fh, $ERR_NOMOTD);
         warn "MOTD could not be opened: $!\n";
     }
-}
-
-# Used by the message of the day to calculate user sums.
-# Since there's no multi-user, the globals are given the same as their local counterparts
-sub calc_global_nums {
-    $global{users}               = $local{users};
-    $global{record_users}        = $local{record_users};
-    $global{invisible_users}     = $local{invisible_users};
-    $global{non_invisible_users} = $local{non_invisible_users};
-#   $global{servers}             = $local{servers}; # Except for this, since the two numbers are always different.
-    $global{operators}           = $local{operators};
-    $global{channels}            = $local{channels};
 }
 
 sub serv_online {
