@@ -2,6 +2,9 @@
 
 # The Veachian Internet Relay Chat Daemon - Coded by Jahn Veach/Veachian64 - V64@V64.net - http://www.v64.net/
 
+# This code is in the public domain. It is provided as is. You may use it for any purpose you want.
+# The author is not responsible for any damages caused by this program.
+
 use strict;
 use warnings;
 use v5.6.1;
@@ -55,7 +58,7 @@ my @clients_to_connect;    # Array containing a list of filehandles that just co
 my @clients_to_disconnect; # Array containing a list of filehandles that have disconnected.
 
 # Will be replaced to be read from a config file later.
-$local{version}     = 'Veachian-0.14';
+$local{version}     = 'Veachian-0.15';
 $local{network}     = 'V64net';
 $local{server}      = 'G42.V64.net';
 $local{server_desc} = 'The Veachian IRCd - Written entirely in the Perl programming language.';
@@ -82,10 +85,13 @@ $global{channels} = 0;
 
 print "Starting $local{version}......";
 
-$local{listen} = IO::Socket::INET->new(LocalPort => $local{port},
-                                       Listen    => 10,
-                                       Proto     => 'tcp',
-                                       Reuse     => 1)
+$local{listen} =
+    IO::Socket::INET->new(
+        LocalPort => $local{port},
+        Listen    => 10,
+        Proto     => 'tcp',
+        Reuse     => 1
+    )
 or die "Unable to creating listening socket: $!\n";
 
 $local{reader} = IO::Select->new();
@@ -98,7 +104,7 @@ print "Server running.\n";
 while (1) {
     my @queues = IO::Select->select($local{reader}, $local{sender}, undef, 0.1);
 
-    foreach my $fh (@{$queues[1]}) {
+    foreach my $fh (@{ $queues[1] }) {
         my $write = syswrite($fh, $users{$fh}{recv_buf});
         if ($users{$fh}{nick} && $local{debug}) { print "Sending to $users{$fh}{hostname} ($users{$fh}{nick}): $users{$fh}{recv_buf}\n" }
         elsif ($local{debug}) { print "Sending to $users{$fh}{hostname}: $users{$fh}{recv_buf}\n" }
@@ -109,7 +115,7 @@ while (1) {
         else { warn "Error sending data to $users{$fh}{nick}: $!\nData saved.\n" }
     }
 
-    foreach my $fh (@{$queues[0]}) {
+    foreach my $fh (@{ $queues[0] }) {
         if ($fh != $local{listen}) {
             my $sent_buf;
             my $read = sysread($fh, $sent_buf, $local{read_size});
@@ -353,6 +359,7 @@ sub send_user_msg_num {
 
 # Used to get a command and redirect it to the proper subroutine to handle the command.
 # Also returns an error for unknown commands.
+
 sub process_command {
     my ($fh, $args) = @_;
     my $command = (split / /, $args)[0];
