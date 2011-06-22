@@ -7,7 +7,7 @@ use IO::Select;
 use IO::Socket;
 use Socket;
 
-my $version = 'Veachian-0.07';
+my $version = 'Veachian-0.08';
 my $network = 'V64net';
 my $server  = 'G42.V64.net';
 my @days = qw/ Sun Mon Tue Wed Thu Fri Sat /;
@@ -22,7 +22,35 @@ my $port = '4242';
 my $serv_desc = 'The Veachian IRCd - Written entirely in the Perl programming language.';
 
 # Some initialization:
-
+# By the way, the giant global %user hash works out like this:
+# $users{local}{data} - Data local to the server.
+#    users               - Users on the server.
+#    record_users        - Record (max) number of users.
+#    invisible_users     - Usermode +i clients on the server.
+#    non_invisible_users - Usermode -i clients on the server.
+#    servers             - Servers server is linked to, excluding self.
+#    operators           - IRCops on the server.
+#    channels            - Channels started by a client on that server.
+#    $nick               - Returns true if nick exists, false if not.
+#    {fh}{$nick}         - The filehandle to a client knowing only their nick.
+#    $users{$fh}{nick}   - Like a $nick, but filled in with the original nick before the NICK change occurs.
+# $users{global}{data} - Data local to the network.
+#    users               - Users on the network.
+#    record_users        - Record (max) number of users.
+#    invisible_users     - Usermode +i clients on the network.
+#    non_invisible_users - Usermode -i clients on the network.
+#    servers             - Total servers on the network.
+#    operators           - IRCops on the network.
+#    channels            - Channels on the server.
+# $users{$fh}{data}    - Information about that unique filehandle/socket/client.
+#    recv_buf            - The buffer containing all data ready to be received by the client.
+#    sent_buf            - The buffer containing all data ready to be read from the client.
+#    nick                - Nickname of the client.
+#    hostname            - Real hostname of the client.
+#    username            - Ident as reported by USER. Not real, prefixed with a ~.
+#    connected           - Used by NICK and USER to tell whether or not the client is connected or in pre-connection.
+#    real_name           - The client's real name as reported for a /whois.
+   
 my %users = ();
 $users{local}{users} = 0;
 $users{global}{users} = 0;
@@ -91,12 +119,12 @@ sub run_server {
                     my @bufs = split(/\n/, $users{$fh}{sent_buf});
                     $users{$fh}{sent_buf} = '';
                     foreach my $args (@bufs) {
-                        if ($users{$fh}{nick}) { print "Received from $users{$fh}{real_host_name} ($users{$fh}{nick}): $args\n" }
-                        else { print "Received from $users{$fh}{real_host_name}: $args\n" }
+                        if ($users{$fh}{nick}) { print "Received from $users{$fh}{hostname} ($users{$fh}{nick}): $args\n" }
+                        else { print "Received from $users{$fh}{hostname}: $args\n" }
                         process_command($fh, $args);
                     }
                 }
-                else { push @clients_to_disconnect, $fh }
+                else { push @clients_to_disconnect, $fh } # If data can't be read, the client disconnect and should be, well, disconnected.
             }
         }
 
@@ -104,6 +132,66 @@ sub run_server {
     }
 }
 
+###########################################################################
+# Subroutines to send data:
+###########################################################################
+
+
+# Sends data prefixed with the user's full address. Used for messages.
+sub send_user_msg_addr {
+    my ($fh, $output) = @_;
+    my $message = ":"."$users{$fh}{nick}"."!"."$users{$fh}{username}"."@"."$users{$fh}{hostname} ";
+    $message .= $output . "\n";
+    $users{$fh}{recv_buf} .= $message;
+    $serv_writable->add($fh); 
+}
+
+# Sends data prefixed with the server name. Used for data that doesn't have a numeric, like server notices.
+sub send_user_msg_serv {
+    my ($fh, $output) = @_;
+    my $message = ":$server ";
+    $message .= $output . "\n";
+    $users{$fh}{recv_buf} .= $message;
+    $serv_writable->add($fh);
+}
+
+# Sends data prefixed with the server name and the supplied numeric. Users for server numerics.
+sub send_user_msg_num {
+    my ($fh, $numeric, $output) = @_;
+    my $message;
+    if ($users{$fh}{nick}) { $message = ":$server $numeric $users{$fh}{nick} " }
+    else { $message = ":$server $numeric * " }
+    $message .= $output . "\n";
+    $users{$fh}{recv_buf} .= $message;
+    $serv_writable->add($fh);
+}
+
+# Send exactly what we're given. Used for all other messages.
+sub send_user_msg_raw {
+    my ($fh, $output) = @_;
+    my $message .= $output . "\n";
+    $users{$fh}{recv_buf} .= $message;
+    $serv_writable->add($fh);
+}
+
+###########################################################################
+# Subroutines to handle logging on:
+###########################################################################
+
+# Accepts the new client and gives it its own filehandle. Sends server notices regarding hostname and calls
+# look_up_host() to find the hostname.
+sub process_login {
+    my $fh = $serv_listen->accept;
+    $serv_readable->add($fh);
+    send_user_msg_serv($fh, "NOTICE AUTH :*** Looking up your hostname...");
+    my $value;
+    ($value, $users{$fh}{hostname}) = look_up_host($fh);
+    if (!$value) { send_user_msg_serv($fh, "NOTICE AUTH :*** Hostname not resolved. Using IP instead: ($users{$fh}{hostname})") }
+    else { send_user_msg_serv($fh, "NOTICE AUTH :*** Hostname found: $users{$fh}{hostname}") }
+    $users{$fh}{connected} = 0;
+}
+
+# Does DNS and reverse DNS to find socket's full and real host.
 sub look_up_host {
     my ($fh) = @_;
     my $other_end = getpeername($fh);
@@ -121,75 +209,25 @@ sub look_up_host {
     @values;
 }
 
-sub send_user_msg_addr {
-    my ($fh, $output) = @_;
-    my $message = ":"."$users{$fh}{nick}"."!"."$users{$fh}{user_name}"."@"."$users{$fh}{real_host_name} ";
-    $message .= $output . "\n";
-    $users{$fh}{recv_buf} .= $message;
-    $serv_writable->add($fh); 
-}
-
-sub send_user_msg_serv {
-    my ($fh, $output) = @_;
-    my $message = ":$server ";
-    $message .= $output . "\n";
-    $users{$fh}{recv_buf} .= $message;
-    $serv_writable->add($fh);
-}
-
-sub send_user_msg_raw {
-    my ($fh, $output) = @_;
-    my $message .= $output . "\n";
-    $users{$fh}{recv_buf} .= $message;
-    $serv_writable->add($fh);
-}
-
-sub send_user_msg_num {
-    my ($fh, $numeric, $output) = @_;
-    my $message;
-    if ($users{$fh}{nick}) { $message = ":$server $numeric $users{$fh}{nick} " }
-    else { $message = ":$server $numeric * " }
-    $message .= $output . "\n";
-    $users{$fh}{recv_buf} .= $message;
-    $serv_writable->add($fh);
-}
-
-sub process_login {
-    my $fh = $serv_listen->accept;
-    $serv_readable->add($fh);
-    send_user_msg_serv($fh, "NOTICE AUTH :*** Looking up your hostname...");
-    my $value;
-    ($value, $users{$fh}{real_host_name}) = look_up_host($fh);
-    if (!$value) { send_user_msg_serv($fh, "NOTICE AUTH :*** Hostname not resolved. Using IP instead: ($users{$fh}{hostname})") }
-    else { send_user_msg_serv($fh, "NOTICE AUTH :*** Hostname found: $users{$fh}{real_host_name}") }
-    $users{$fh}{connected} = 0;
-}
-
+# Occurs after NICK and USER are received and user is registered.
 sub new_logon {
     my ($fh) = @_;
     $users{local}{users}++;
     $users{local}{record_users} = max($users{local}{users}, $users{local}{record_users});
     $users{local}{non_invisible_users}++;
-    send_user_msg_num($fh, '001', ":Welcome to the $network IRC Network $users{$fh}{nick}".'!'."$users{$fh}{user_name}".'@'."$users{$fh}{real_host_name}");
+    send_user_msg_num($fh, '001', ":Welcome to the $network IRC Network $users{$fh}{nick}".'!'."$users{$fh}{username}".'@'."$users{$fh}{hostname}");
     send_user_msg_num($fh, '002', ":Your host is $server, running version $version");
     send_user_msg_num($fh, '003', ":This server was created $serv_startup");
     serv_lusers($fh);
     serv_motd($fh);    
 }
 
-sub max { ($_[0] > $_[1]) ? $_[0] : $_[1] }
-sub min { ($_[0] < $_[1]) ? $_[0] : $_[1] }
+###########################################################################
+# Subroutines to handle incoming commands:
+###########################################################################
 
-sub calc_global_nums() {
-    $users{global}{users}               = $users{local}{users};
-    $users{global}{record_users}        = $users{local}{record_users};
-    $users{global}{invisible_users}     = $users{local}{invisible_users};
-    $users{global}{non_invisible_users} = $users{local}{non_invisible_users};
-#   $users{global}{servers}             = $users{local}{servers};
-    $users{global}{operators}           = $users{local}{operators};
-    $users{global}{channels}            = $users{local}{channels};
-}
-
+# Used to get a command and redirect it to the proper subroutine to handle the command.
+# Also returns an error for unknown commands.
 sub process_command {
     my ($fh, $args) = @_;
     my $command = (split /\s+/, $args)[0];
@@ -207,13 +245,14 @@ sub process_command {
     else { send_user_msg_num($fh, '421', "$command :Unknown command or command not yet implemented") }
 }
 
+# Handles the user command. If NICK has already been issued, logs on.
 sub serv_user {
     my ($fh, $args) = @_;
     my @user_info = split /\s+/, $args;
     if (!$users{$fh}{connected}) {
         if (@user_info < 5) { send_user_msg_num($fh, '461', "USER :Not enough parameters") }
         else {
-            $users{$fh}{user_name} = '~' . $user_info[1];
+            $users{$fh}{username} = '~' . $user_info[1];
             for (4..$#user_info) {
                 if ($_ ne $#user_info) { $users{$fh}{real_name} .= "$user_info[$_] " }
                 else { $users{$fh}{real_name} .= $user_info[$_] }
@@ -229,6 +268,8 @@ sub serv_user {
     else { send_user_msg_num($fh, '462', ":You may not reregister") }
 }
 
+# Handles the nick command. If NICK has already been issued, logs on.
+# Also handles nick changes.
 sub serv_nick {
     my ($fh, $args) = @_;
     if (!$users{$fh}{connected}) {
@@ -250,7 +291,7 @@ sub serv_nick {
             $users{local}{fh}{$nick} = $fh;
         }
 
-        if ($users{$fh}{user_name}) {
+        if ($users{$fh}{username}) {
             $users{$fh}{connected} = 1;
             new_logon($fh);
         }
@@ -281,6 +322,7 @@ sub serv_nick {
     }
 }
 
+# Sends off NOTICEs and PRIVMSGs.
 sub serv_privmsg {
     my ($fh, $args) = @_;
     my $nick = (split /\s+/, $args)[1];
@@ -289,11 +331,19 @@ sub serv_privmsg {
         return;
     }
     else {
-        my $send_to_fh = $users{local}{fh}{$nick};
-        send_user_msg_raw($send_to_fh, ":"."$users{$fh}{nick}"."!"."$users{$fh}{user_name}"."@"."$users{$fh}{real_host_name} $args");
+        my $send_to_fh = get_fh_from_nick($nick);
+        send_user_msg_raw($send_to_fh, ":"."$users{$fh}{nick}"."!"."$users{$fh}{username}"."@"."$users{$fh}{hostname} $args");
     }
 }
 
+# Used by serv_privmsg() to retrieve the socket for the owner of a nick.
+# Used to know where to send a message to a nick.
+sub get_fh_from_nick {
+    my ($nick) = @_;
+    $users{local}{fh}{$nick};
+}
+
+# Returns whois data about a nick.
 sub serv_whois {
     my ($fh, $args) = @_;
     my $nick = (split /\s+/, $args)[1];
@@ -304,13 +354,14 @@ sub serv_whois {
     }
 
     else {
-        my $fh_of_nick = $users{local}{fh}{$nick};
-        send_user_msg_num($fh, '311', "$users{$fh_of_nick}{nick} $users{$fh_of_nick}{user_name} $users{$fh_of_nick}{real_host_name} * $users{$fh_of_nick}{real_name}");
+        my $fh_of_nick = get_fh_from_nick($nick);
+        send_user_msg_num($fh, '311', "$users{$fh_of_nick}{nick} $users{$fh_of_nick}{username} $users{$fh_of_nick}{hostname} * $users{$fh_of_nick}{real_name}");
         send_user_msg_num($fh, '312', "$users{$fh_of_nick}{nick} $server :"."$serv_desc");
         send_user_msg_num($fh, '318', ":End of /WHOIS list.");
     }
 }
 
+# Returns server connection data.
 sub serv_lusers {
     my ($fh) = @_;
     calc_global_nums();
@@ -323,6 +374,7 @@ sub serv_lusers {
     send_user_msg_num($fh, '266', ":Current Global Users: $users{global}{users}  Max: $users{global}{record_users}");
 }
 
+# Returns the message of the day.
 sub serv_motd {
     my ($fh) = @_;
     send_user_msg_num($fh, '375', ":- $server Message of the Day -");
@@ -332,10 +384,27 @@ sub serv_motd {
     send_user_msg_num($fh, '376', ":End of /MOTD command.");
 }
 
+# Used by the message of the day to calculate user sums.
+# Since there's no multi-user, the globals are given the same as their local counterparts
+sub calc_global_nums() {
+    $users{global}{users}               = $users{local}{users};
+    $users{global}{record_users}        = $users{local}{record_users};
+    $users{global}{invisible_users}     = $users{local}{invisible_users};
+    $users{global}{non_invisible_users} = $users{local}{non_invisible_users};
+#   $users{global}{servers}             = $users{local}{servers}; # Except for this, since the two numbers are always different.
+    $users{global}{operators}           = $users{local}{operators};
+    $users{global}{channels}            = $users{local}{channels};
+}
+
+###########################################################################
+# Other subroutines:
+###########################################################################
+
+# Used to disconnect and clear the data of any clients that have disconnected.
 sub disconnect_dead_clients {
     foreach my $fh (@clients_to_disconnect) {
         shift @clients_to_disconnect;
-        print "Client disconnected: $users{$fh}{real_host_name}\n";
+        print "Client disconnected: $users{$fh}{hostname}\n";
         $serv_readable->remove($fh);
         $serv_writable->remove($fh);
         $users{local}{$users{$fh}{nick}} = undef;
@@ -347,3 +416,7 @@ sub disconnect_dead_clients {
         $fh->close;
     }
 }
+
+# Finds the max and min of two numbers.
+sub max { ($_[0] > $_[1]) ? $_[0] : $_[1] }
+sub min { ($_[0] < $_[1]) ? $_[0] : $_[1] }
