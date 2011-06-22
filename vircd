@@ -13,11 +13,10 @@ use IO::Socket;
 use Socket;
 
 # TODO: Modularize code.
-#       Better solution to if/elsif in process_command() ({serv_ . $command}? How could unregged check work?)
 #       Make serv_[user|nick] not depend on global @clients_to_connect, make that local to while loop.
 #       No subroutines fiddle around with globals (too much)
 #       Subroutine that's safer than doing $fhs{lc $nick} (is it worth it?)
-#       Constants ($local{} and the like) constant in sprintf
+#       Constants ($local{} and the like) in sprintfs.
 
 
 # Some initialization:
@@ -85,6 +84,17 @@ $numstr{$ERR_NICKNAMEINUSE} = '%s :Nickname is already in use.';
 $numstr{$ERR_NOTREGISTERED} = '%s :Register first';
 $numstr{$ERR_NEEDMOREPARAMS} = '%s :Not enough parameters';
 $numstr{$ERR_ALREADYREGISTERED} = ':You may not reregister';
+
+my %commhash;
+
+$commhash{user}    = \&serv_user;
+$commhash{nick}    = \&serv_nick;
+$commhash{privmsg} = \&serv_privmsg;
+$commhash{whois}   = \&serv_whois;
+$commhash{lusers}  = \&serv_lusers;
+$commhash{motd}    = \&serv_motd;
+$commhash{notice}  = \&serv_privmsg;
+$commhash{online}  = \&serv_online;
 ###############################################################################
 
 my @clients_to_connect; # Array containing a list of filehandles that just connected.
@@ -94,7 +104,7 @@ my %local;  # Hash containing all local info for the server. Ex. $local{users}
 my %fhs;    # Hash mapping nicks to filehandles.
 
 # Will be replaced to be read from a config file later.
-$local{version}     = 'Veachian-0.21';
+$local{version}     = 'Veachian-0.22';
 $local{network}     = 'V64net';
 $local{server}      = 'G42.V64.net';
 $local{server_desc} = 'The Veachian IRCd - Written entirely in the Perl programming language.';
@@ -304,19 +314,10 @@ sub process_command {
     my $command = (split / /, $args)[0];
     $command = lc $command;
 
-    if    ($command eq 'user')    { serv_user($fh, $args)    }
-    elsif ($command eq 'nick')    { serv_nick($fh, $args)    }
-
-    elsif (!$users{$fh}->{connected})  { send_user_msg_num($fh, $ERR_NOTREGISTERED, $command) }
     # That's to catch anyone trying to send any other commands when they're not registered.
+    if (!$users{$fh}->{connected} && ($command ne 'nick' && $command ne 'user')) { send_user_msg_num($fh, $ERR_NOTREGISTERED, $command); return; }
 
-    elsif ($command eq 'privmsg') { serv_privmsg($fh, $args) }
-    elsif ($command eq 'whois')   { serv_whois($fh, $args)   }
-    elsif ($command eq 'lusers')  { serv_lusers($fh)         }
-    elsif ($command eq 'motd')    { serv_motd($fh)           }
-    elsif ($command eq 'notice')  { serv_privmsg($fh, $args) }
-    elsif ($command eq 'online')  { serv_online($fh)         }
-
+    if (exists $commhash{$command}) { $commhash{$command}->($fh, $args) }
     else { send_user_msg_num($fh, $ERR_UNKNOWNCOMMAND, $command) }
 }
 
@@ -324,9 +325,9 @@ sub process_command {
 sub serv_user {
     my ($fh, $args) = @_;
     my @user_info = split / /, $args;
-    if (@user_info < 5) { send_user_msg_num($fh, $ERR_NEEDMOREPARAMS, 'USER'); return; }
 
     if (!$users{$fh}->{connected}) {
+        if (@user_info < 5) { send_user_msg_num($fh, $ERR_NEEDMOREPARAMS, 'USER'); return; }
         $users{$fh}->{username} = "~$user_info[1]";
         for (4..$#user_info) {
             if ($_ ne $#user_info) { $users{$fh}->{realname} .= "$user_info[$_] " }
