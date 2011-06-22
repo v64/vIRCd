@@ -1,5 +1,6 @@
 The Veachian IRCd -
 Coding started on Sat Dec 22 2001, 6:00 AM.
+Version 0.5 created Tues Jul 16 2003.
 
 Welcome to irc.V64.net on V64net. This server is running the experimental
 Veachian IRCd. It's an IRCd written entirely in Perl and is currently VERY
@@ -14,11 +15,8 @@ The following commands have been implemented:
 /whois
 /lusers
 /motd
-/online (returns a list of logged in nicks so you can message people, or it did before I broke it)
-
-The following are planned:
-/away
-Channels.
+/join and /part
+/quit
 
 Bugs:
 Case-sensitivity's been fixed. /whois VEACHIAN64, veachian64,
@@ -31,9 +29,6 @@ subroutine that cleared out disconnect users (and subsequently
 decreased the user count) was bugged and only did it to every
 other client. This caused half the disconnected clients to not
 be accounted for.
-
-Channels and further development will not
-occur until outstanding bugs are fixed.
 
 By the way, the only reason why this MOTD is so long
 is to test out the appropriate buffering functions.
