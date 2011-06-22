@@ -7,7 +7,7 @@ use IO::Select;
 use IO::Socket;
 use Socket;
 
-use constant IRCD_VERSION => 'Veachian-0.01';
+our $version = 'Veachian-0.02';
 
 our %users = ();
 our $serv_listen;
@@ -19,7 +19,7 @@ run_server();
 exit;
 
 sub init_server {
-    print "Starting ", IRCD_VERSION, ".....\n";
+    print "Starting $version...\n";
 
     $serv_listen = IO::Socket::INET->new(LocalPort => 4242,
                                          Listen    => 10,
@@ -39,21 +39,21 @@ sub run_server {
     while (1) {
         my @ready = IO::Select->select($serv_readable, $serv_writable, undef, 0.1);
 
-        foreach my $write_fh (@{$ready[1]}) {
-            my $write = syswrite($write_fh, $message, 1024);
-        }
+#        foreach my $write_fh (@{$ready[1]}) {
+#            my $write = syswrite($write_fh, $message, 1024);
+#        }
 
 
         foreach my $fh (@{$ready[0]}) {
             if ($fh == $serv_listen) {
-                my $new = $serv_listen->accept;
-                $serv_readable->add($new);
-#               $serv_writable->add($new);
-                send_to_user_now($fh, ":G42.V64.net NOTICE AUTH :*** Looking up your hostname...");
+                $fh = $serv_listen->accept;
+                $serv_readable->add($fh);
+#               $serv_writable->add($fh);
+                send_to_user_now($fh, "NOTICE AUTH :*** Looking up your hostname...");
                 my $value;
-                ($value, $users{$fh}{hostname}) = look_up_host($new);
-                if (!$value) { send_to_user_now($fh, ":G42.V64.net NOTICE AUTH :*** Hostname not resolved. Using IP instead. ($users{$fh}{hostname})");
-                else { send_to_user_now($fh, ":G42.V64.net NOTICE AUTH :*** Hostname found: $users{$fh}{hostname}");
+                ($value, $users{$fh}{real_host_name}) = look_up_host($fh);
+                if (!$value) { send_to_user_now($fh, "NOTICE AUTH :*** Hostname not resolved. Using IP instead: ($users{$fh}{hostname})") }
+                else { send_to_user_now($fh, "NOTICE AUTH :*** Hostname found: $users{$fh}{real_host_name}") }
                 $users{$fh}{connected} = 0;
             }
 
@@ -62,17 +62,32 @@ sub run_server {
                 if ($read) {
                     my @bufs = split(/\n/, $users{$fh}{recv_buffer});
                     foreach (@bufs) {
-                        if ((!$users{$fh}{connected}) && (m/^USER/)) {
+                        if ((!$users{$fh}{connected}) && (m/^USER /)) {
                             my @user_info = split(' ');
-                            if (@user_info < 5) { send_to_user_now($fh, ":G42.V64.net 461 USER :Not enough parameters") }
+                            if (@user_info < 5) { send_to_user_now($fh, "461 USER :Not enough parameters") }
                             else {
-                                $users{$fh}{user_name} = $user_info[1];
+                                $users{$fh}{user_name} = '~' . $user_info[1];
                                 $users{$fh}{host_name} = $user_info[2];
                                 $users{$fh}{server_name} = $user_info[3];
                                 $users{$fh}{real_name} = $user_info[4];
+                                if ($users{$fh}{nick}) {
+                                    $users{$fh}{connected} = 1;
+                                    send_to_user_now($fh, "NOTICE AUTH :*** Now connecting to V64net.");
+                                    new_logon($fh);
+                                }
                             }
                         }
 
+                        elsif ((!$users{$fh}{connected}) && (m/^NICK /)) {
+                            my $nick = (split(' '))[1];
+                            if (!$nick) { send_to_user_now($fh, "461 NICK :Not enough parameters") }
+                            else { $users{$fh}{nick} = $nick }
+                            if ($users{$fh}{user_name}) {
+                                $users{$fh}{connected} = 1;
+                                send_to_user_now($fh, "NOTICE AUTH :*** Now connecting to V64net.");
+                                new_logon($fh);
+                            }
+                       }
                     }
                 }
 
@@ -88,20 +103,27 @@ sub look_up_host {
     my $other_end = getpeername($socket);
     my $iaddr = (unpack_sockaddr_in($other_end))[1];
     my $actual_ip = inet_ntoa($iaddr);
-    print "IP is $actual_ip.\n";
     my $claimed_hostname = gethostbyaddr($iaddr, AF_INET);
     my $name_lookup = (gethostbyname($claimed_hostname))[0];
     if (!$name_lookup) {
+        print "Client connected: $actual_ip\n";
         my (@values) = (0, $actual_ip);
         return @values;
     }
-    print "Hostname is $name_lookup.\n";
+    print "Client connected: $name_lookup\n";
     my (@values) = (1, $name_lookup);
     @values;
 }
 
 sub send_to_user_now {
     my $socket = shift;
-    my $message = shift . "\n";
+    my $message = ":G42.V64.net ";
+    $message .= (shift) . "\n";
     syswrite($socket, $message, 1024);
+}
+
+sub new_logon {
+    my $socket = shift;
+    send_to_user_now($socket, "001 $users{$socket}{nick} :Welcome to the V64net IRC Network $users{$socket}{nick}" . '!' . "$users{$socket}{user_name}" . '@' . "$users{$socket}{real_host_name}");
+    send_to_user_now($socket, "002 $users{$socket}{nick} :Your host is G42.V64.net, running version $version");
 }
