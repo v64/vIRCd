@@ -7,100 +7,100 @@ use IO::Select;
 use IO::Socket;
 use Socket;
 
-our $version = 'Veachian-0.02';
+my $version = 'Veachian-0.03';
+my $network = 'V64net';
+my $server  = 'G42.V64.net';
+my @days = qw/ Sun Mon Tue Wed Thu Fri Sat /;
+my @months = qw/ Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec /;
+my $serv_startup = sprintf("%s %s %02d %04d at %02d:%02d:%02d %s", $days[(localtime)[6]], $months[(localtime)[4]],
+                                                                   (localtime)[3], (localtime)[5] + 1900, (localtime)[2],
+                                                                   (localtime)[1], (localtime)[0], (localtime)[8] ? 'CDT' : 'CST');
+my $motd = 'vircd.motd';
 
-our %users = ();
-our $serv_listen;
-our $serv_readable;
-our $serv_writable;
+my %users = ();
+$users{local}{users} = 0;
+$users{global}{users} = 0;
 
-init_server();
+$users{local}{record_users} = 0;
+$users{global}{record_users} = 0;
+
+$users{local}{invisible_users} = 0;
+$users{global}{invisible_users} = 0;
+
+$users{local}{non_invisible_users} = 0;
+$users{global}{non_invisible_users} = 0;
+
+$users{local}{servers} = 0;
+$users{global}{servers} = 1;
+
+$users{local}{operators} = 0;
+$users{global}{operators} = 0;
+
+$users{local}{channels} = 0;
+$users{global}{channels} = 0;
+
+my $serv_listen;
+my $serv_readable;
+my $serv_writable;
+
+print "Starting $version...\n";
+
+$serv_listen = IO::Socket::INET->new(LocalPort => 4242,
+                                     Listen    => 10,
+                                     Proto     => 'tcp',
+                                     Reuse     => 1)
+or die "Unable to creating listening socket.\n";
+
+$serv_readable = IO::Select->new();
+$serv_readable->add($serv_listen);
+$serv_writable = IO::Select->new();
+$serv_writable->add($serv_listen);
+
+print "Server running.\n";
+
 run_server();
 exit;
-
-sub init_server {
-    print "Starting $version...\n";
-
-    $serv_listen = IO::Socket::INET->new(LocalPort => 4242,
-                                         Listen    => 10,
-                                         Proto     => 'tcp',
-                                         Reuse     => 1)
-    or die "Unable to creating listening socket.\n";
-
-    $serv_readable = IO::Select->new();
-    $serv_readable->add($serv_listen);
-    $serv_writable = IO::Select->new();
-    $serv_writable->add($serv_listen);
-
-    print "Server running.\n";
-}
 
 sub run_server {
     while (1) {
         my @ready = IO::Select->select($serv_readable, $serv_writable, undef, 0.1);
 
-#        foreach my $write_fh (@{$ready[1]}) {
-#            my $write = syswrite($write_fh, $message, 1024);
-#        }
-
+        foreach my $write_fh (@{$ready[1]}) {
+            my $write = syswrite($write_fh, $users{$write_fh}{recv_buf}, 3072);
+            if (!$write) { warn "Error sending data to $users{$write_fh}{nick}: $!\nData will be lost.\n" }
+            $users{$write_fh}{recv_buf} = '';
+            $serv_writable->remove($write_fh);
+        }
 
         foreach my $fh (@{$ready[0]}) {
             if ($fh == $serv_listen) {
-                $fh = $serv_listen->accept;
-                $serv_readable->add($fh);
-#               $serv_writable->add($fh);
-                send_to_user_now($fh, "NOTICE AUTH :*** Looking up your hostname...");
-                my $value;
-                ($value, $users{$fh}{real_host_name}) = look_up_host($fh);
-                if (!$value) { send_to_user_now($fh, "NOTICE AUTH :*** Hostname not resolved. Using IP instead: ($users{$fh}{hostname})") }
-                else { send_to_user_now($fh, "NOTICE AUTH :*** Hostname found: $users{$fh}{real_host_name}") }
-                $users{$fh}{connected} = 0;
+                process_login($fh);
             }
 
             else {                
-                my $read = sysread($fh, $users{$fh}{recv_buffer}, 1024);
+                my $read = sysread($fh, $users{$fh}{sent_buf}, 3072);
                 if ($read) {
-                    my @bufs = split(/\n/, $users{$fh}{recv_buffer});
+                    my @bufs = split(/\n/, $users{$fh}{sent_buf});
+                    $users{$fh}{sent_buf} = '';
                     foreach (@bufs) {
-                        if ((!$users{$fh}{connected}) && (m/^USER /)) {
-                            my @user_info = split(' ');
-                            if (@user_info < 5) { send_to_user_now($fh, "461 USER :Not enough parameters") }
-                            else {
-                                $users{$fh}{user_name} = '~' . $user_info[1];
-                                $users{$fh}{host_name} = $user_info[2];
-                                $users{$fh}{server_name} = $user_info[3];
-                                $users{$fh}{real_name} = $user_info[4];
-                                if ($users{$fh}{nick}) {
-                                    $users{$fh}{connected} = 1;
-                                    send_to_user_now($fh, "NOTICE AUTH :*** Now connecting to V64net.");
-                                    new_logon($fh);
-                                }
-                            }
-                        }
-
-                        elsif ((!$users{$fh}{connected}) && (m/^NICK /)) {
-                            my $nick = (split(' '))[1];
-                            if (!$nick) { send_to_user_now($fh, "461 NICK :Not enough parameters") }
-                            else { $users{$fh}{nick} = $nick }
-                            if ($users{$fh}{user_name}) {
-                                $users{$fh}{connected} = 1;
-                                send_to_user_now($fh, "NOTICE AUTH :*** Now connecting to V64net.");
-                                new_logon($fh);
-                            }
-                       }
+                        process_command($fh, $_);
                     }
                 }
-
-#               $serv_readable->remove($fh);
-#               $fh->close;
+                else {         
+                    print "Client disconnected: $users{$fh}{real_host_name}\n";
+                    $serv_readable->remove($fh);
+                    $serv_writable->remove($fh);
+                    $fh->close;
+                    delete $users{$fh};
+                }
             }
         }
     }
 }
 
 sub look_up_host {
-    my $socket = shift;
-    my $other_end = getpeername($socket);
+    my $fh = shift;
+    my $other_end = getpeername($fh);
     my $iaddr = (unpack_sockaddr_in($other_end))[1];
     my $actual_ip = inet_ntoa($iaddr);
     my $claimed_hostname = gethostbyaddr($iaddr, AF_INET);
@@ -115,15 +115,104 @@ sub look_up_host {
     @values;
 }
 
-sub send_to_user_now {
-    my $socket = shift;
-    my $message = ":G42.V64.net ";
+sub send_user_msg {
+    my $fh = shift;
+    my $message = ":$server ";
     $message .= (shift) . "\n";
-    syswrite($socket, $message, 1024);
+    $users{$fh}{recv_buf} .= $message;
+    $serv_writable->add($fh);
+}
+
+sub send_user_num {
+    my $fh = shift;
+    my $numeric = shift;
+    my $message;
+    if ($users{$fh}{nick}) { $message = ":$server $numeric $users{$fh}{nick} " }
+    else { $message = ":$server $numeric " }
+    $message .= (shift) . "\n";
+    $users{$fh}{recv_buf} .= $message;
+    $serv_writable->add($fh);
+}
+
+sub process_login {
+    my $fh = $serv_listen->accept;
+    $serv_readable->add($fh);
+    send_user_msg($fh, "NOTICE AUTH :*** Looking up your hostname...");
+    my $value;
+    ($value, $users{$fh}{real_host_name}) = look_up_host($fh);
+    if (!$value) { send_user_msg($fh, "NOTICE AUTH :*** Hostname not resolved. Using IP instead: ($users{$fh}{hostname})") }
+    else { send_user_msg($fh, "NOTICE AUTH :*** Hostname found: $users{$fh}{real_host_name}") }
+    $users{$fh}{connected} = 0;
 }
 
 sub new_logon {
-    my $socket = shift;
-    send_to_user_now($socket, "001 $users{$socket}{nick} :Welcome to the V64net IRC Network $users{$socket}{nick}" . '!' . "$users{$socket}{user_name}" . '@' . "$users{$socket}{real_host_name}");
-    send_to_user_now($socket, "002 $users{$socket}{nick} :Your host is G42.V64.net, running version $version");
+    my $fh = shift;
+    $users{local}{users}++;
+    $users{local}{record_users} = max($users{local}{users}, $users{local}{record_users});
+    $users{local}{non_invisible_users}++;
+    calc_global_nums();
+    send_user_num($fh, '001', ":Welcome to the $network IRC Network $users{$fh}{nick}".'!'."$users{$fh}{user_name}".'@'."$users{$fh}{real_host_name}");
+    send_user_num($fh, '002', ":Your host is $server, running version $version");
+    send_user_num($fh, '003', ":This server was created $serv_startup");
+    send_user_num($fh, '251', ":There are $users{global}{non_invisible_users} users and $users{global}{invisible_users} invisible on $users{global}{servers} servers");
+    send_user_num($fh, '252', "$users{global}{operators} :operator(s) online");
+    send_user_num($fh, '254', "$users{global}{channels} :channels formed");
+    send_user_num($fh, '255', ":I have $users{local}{users} clients and $users{local}{servers} servers");
+    send_user_num($fh, '265', ":Current Local Users: $users{local}{users}  Max: $users{local}{record_users}");
+    send_user_num($fh, '266', ":Current Global Users: $users{global}{users}  Max: $users{global}{record_users}");
+    send_user_num($fh, '375', ":- $server Message of the Day -");
+    open(MOTD, "<vircd.motd") or warn "Error opening MOTD: $!\n";
+    while (<MOTD>) { send_user_num($fh, '372', ":- $_") }
+    close MOTD;
+    send_user_num($fh, '376', ":End of /MOTD command.");
+    
+}
+
+sub max { ($_[0] > $_[1]) ? $_[0] : $_[1] }
+sub min { ($_[0] < $_[1]) ? $_[0] : $_[1] }
+
+sub calc_global_nums() {
+    $users{global}{users}               = $users{local}{users};
+    $users{global}{record_users}        = $users{local}{record_users};
+    $users{global}{invisible_users}     = $users{local}{invisible_users};
+    $users{global}{non_invisible_users} = $users{local}{non_invisible_users};
+#   $users{global}{servers}             = $users{local}{servers};
+    $users{global}{operators}           = $users{local}{operators};
+    $users{global}{channels}            = $users{local}{channels};
+}
+
+sub process_command {
+    my $fh = shift;
+    $_ = shift;
+    if    (m/^USER /) { serv_user($fh) }
+    elsif (m/^NICK /) { serv_nick($fh) }
+}
+
+sub serv_user {
+    my $fh = shift;
+    if (!$users{$fh}{connected}) {
+        my @user_info = split(' ');
+        if (@user_info < 5) { send_user_num($fh, '461', "USER :Not enough parameters") }
+        else {
+            $users{$fh}{user_name} = '~' . $user_info[1];
+            $users{$fh}{real_name} = $user_info[4];
+            if ($users{$fh}{nick}) {
+                $users{$fh}{connected} = 1;
+                new_logon($fh);
+            }
+        }
+    }
+}
+
+sub serv_nick {
+    my $fh = shift;
+    if (!$users{$fh}{connected}) {
+        my $nick = (split(' '))[1];
+        if (!$nick) { send_user_num($fh, '461', "NICK :Not enough parameters") }
+        else { $users{$fh}{nick} = $nick }
+        if ($users{$fh}{user_name}) {
+            $users{$fh}{connected} = 1;
+            new_logon($fh);
+        }
+    }
 }
