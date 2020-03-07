@@ -37,10 +37,7 @@ inaccurate.
 Like I said this isn't meant to be stable or complete. It's just here for you to do
 whatever you want with it.
 
-Happy coding,
-
-Jahn Veach (Veachian64)
-
-V64@V64.net
-
+Happy coding,  
+Jahn Veach (Veachian64)  
+V64@V64.net  
 www.v64.net
